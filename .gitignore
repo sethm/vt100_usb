@@ -7,3 +7,4 @@
 *.o
 *.sym
 .DS_Store
+.dep/

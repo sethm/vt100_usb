@@ -6,10 +6,9 @@
  */
 
 #include <avr/io.h>
-// #include <avr/pgmspace.h>
-#include <stdint.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
+#include <stdint.h>
 #include "usb_debug_only.h"
 #include "print.h"
 
@@ -27,18 +26,47 @@
 
 #define CLOCK_PERIOD 8  /* microseconds */
 
-#define TOGGLE_READ  PORTD ^= KBD_RD_L ; _delay_us(10) ; PORTD ^= KBD_RD_L
-
 /* Pulse the KBD_RESET_H line high for 10 microseconds */
 #define TOGGLE_RESET PORTB ^= KBD_RESET_H ; _delay_us(10) ; PORTB ^= KBD_RESET_H ; _delay_us(25 * CLOCK_PERIOD)
+
+/*
+ * Number of status updates between requests for keyboard scans.
+ */
+#define STEPS_BETWEEN_SCAN 16
 
 /*
  * Function definitions
  */
 void setup(void);
-void service_loop(void);
+void kbd_status_loop(void);
 uint8_t kbd_read(void);
 void kbd_write(uint8_t val);
+
+/*
+ * Globals
+ */
+
+/* The current iteration through the status loop. */
+volatile int scan_counter = 0;
+
+/* The keyboard status word. */
+volatile uint8_t kbd_status = 0;
+
+/* If set to '1', a scan is needed at the next interval. */
+volatile int scan_done = 1;
+
+/* The most recently read character. */
+volatile uint8_t last_char = 0;
+
+static const char unshifted_char_codes[32] = {
+  0x00, 0x00, 0x00, 0x7f, 0x0d, 0x70, 0x6f, 0x79, 0x74, 0x77, 0x71, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x5d, 0x5b, 0x69, 0x75, 0x72, 0x65, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static const char *char_names[32] = {
+  "NUL", "NUL", "NUL", "DEL", "RET", "p", "o", "y", "t", "w", "q", "NUL", "NUL", "NUL", "NUL", "NUL",
+  "NUL", "NUL", "NUL", "NUL", "]",   "[", "i", "u", "r", "e", "1", "NUL", "NUL", "NUL", "NUL", "NUL"
+};
 
 /*
  * Main Entry Point
@@ -46,51 +74,55 @@ void kbd_write(uint8_t val);
 int main(void) {
   CPU_PRESCALE(0);
   setup();
-  service_loop();
+  usb_init();
+
+  /* Keep pushing status to the keyboard, forever. */
+
+  kbd_status_loop();
 }
 
-#define STEPS_BETWEEN_SCAN 64
+/* DEBUG: Watchdog timeout on waiting for 'scan done' */
+
+volatile int scan_done_watchdog = 2048;
 
 /*
  * The main service loop.
  */
-void service_loop(void) {
-  uint8_t kstatus;
-  volatile int scan_counter;
-
+void kbd_status_loop(void) {
+  
   scan_counter = STEPS_BETWEEN_SCAN;
-
+  
   while (1) {
-    kstatus = 1;
 
+    // Watchdog check.
+    if (--scan_done_watchdog == 0) {
 
-    // Just do a binary count.
-    kstatus = 0;
-    while (kstatus < (1<<4)) {
-      for (int k = 0; k < 512; k++) {
-
-	if (--scan_counter == 0) {
-	  kstatus |= 0x50; // bit 6 is 'START_SCAN'
-	} else {
-	  kstatus &= ~0x50;
-	}
-
-	kbd_write(kstatus);
-
-	if (scan_counter == 0) {
-	  scan_counter = STEPS_BETWEEN_SCAN;
-	}
-
+      if (!scan_done) {
+	print("Scan Watchdog Timeout exceeded. Resetting.\r\n");
+	scan_done = 1;
       }
-      kstatus++;
+      
+      scan_done_watchdog = 2048;
     }
 
+    if (--scan_counter == 0 && scan_done) {
+      kbd_status |= 0x50; // bit 6 is 'START_SCAN'
+    } else {
+      kbd_status &= ~0x50;
+    }
+    
+    kbd_write(kbd_status);
+    
+    if (scan_counter == 0) {
+      scan_counter = STEPS_BETWEEN_SCAN;
+    }
+    
   }
 }
 
 /*
- * The unfortuate arrangement of IO pins, and my absurd desire to make
- * the hardware wiring easier, lead to a fairly complex implementation
+ * The unfortuate arrangement of IO pins and my absurd desire to make
+ * the hardware wiring easier lead to a fairly complex implementation
  * of a simple write.
  *
  * The keyboard output is wired to B0, B1, B2, B3, B7, D0, D1, D2.
@@ -122,14 +154,16 @@ void kbd_write(uint8_t val) {
 uint8_t kbd_read(void) {
   int f, b;
 
-  PORTD ^= KBD_RD_L;
+  // PORTD ^= KBD_RD_L;
+  PORTD &= ~KBD_RD_L; // Pull low
 
   _delay_us(1);
 
   f = PINF;
   b = PINB;
 
-  PORTD ^= KBD_RD_L;
+  // PORTD ^= KBD_RD_L;
+  PORTD |= KBD_RD_L;  // Make high again
 
   /* Expected result byte is read from:
    *
@@ -153,10 +187,34 @@ uint8_t kbd_read(void) {
  * interrupt is considered to have been served.
  *
  */
+
+// TODO:
+// I think the algorithm is:
+//   1. Read into global keycode variable.
+//   2. If keycode was not '7F', disable 'start next scan' variable.
+//   3. If keycode is '7F', enable 'start next scan' variable.
+//
+// New global state needed:
+//   1. Last scan code read.
+//   2. Toggle for 'do a scan at your next opportunity'
+
 ISR(INT3_vect) {
-  int read_byte;
-  read_byte = kbd_read();
-  // Transmit USB.
+  uint8_t data_in = kbd_read();
+  
+  if (data_in == 0x7f) {
+    scan_done = 1;
+  } else {
+    /* If the data is not 0x7f, we need to hold off on the scan requests until it appears. */
+    // TODO: We'll need to watch for key repeat here.
+    if (last_char != data_in) {
+      print("KBD Read interrupt: data=");
+      phex(data_in);
+      print("\r\n");
+
+      last_char = data_in;
+    }
+    scan_done = 0;
+  }
 }
 
 /*
@@ -211,11 +269,9 @@ void setup(void) {
    */
   DDRF = 0b00001100;
 
-  // Initialize RESET to LOW (it's active high)
-  PORTD &= ~KBD_RESET_H;
-
-  // Initialize READ and WRITE to HIGH (they're active low)
-  PORTB = KBD_RD_L | KBD_WR_L;
+  // Initialize READ and WRITE to HIGH (they're active low),
+  // the rest of PORTD to low.
+  PORTD = KBD_RD_L | KBD_WR_L;
 
   // Enable interrupts on INT3 (PD3)
   EIMSK = (1 << INT3);
