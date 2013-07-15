@@ -29,8 +29,8 @@
 
 #define KEY_BUFFER_SIZE 3
 
-#define LONG_REPEAT_TIMEOUT  30
-#define SHORT_REPEAT_TIMEOUT 400
+#define LONG_REPEAT_TIMEOUT  400
+#define SHORT_REPEAT_TIMEOUT 30
 
 #define TRUE 1
 #define FALSE 0
@@ -51,8 +51,6 @@ typedef unsigned int bool_t;
 /*
  * Function definitions
  */
-static void kbd_status_loop(void);
-
 static uint8_t kbd_read(void);
 
 static void kbd_write(uint8_t val);

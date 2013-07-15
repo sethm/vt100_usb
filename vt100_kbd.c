@@ -100,20 +100,23 @@ int scan_needed_timeout = 0;
 /* The keyboard status word. */
 uint8_t kbd_status = 0;
 
-/* If set to '1', a scan is needed at the next interval. */
-// TODO: Not 100% sure this needs to be volatile. Just being safe, as
-// it can be changed by the interrupt and _might_ be optimized away in
-// the main loop.
+// TODO: Not 100% sure these three need to be volatile. Just being
+// safe, as they can be changed by the interrupt and _might_ be
+// optimized away in the main loop.
+
+// If set to '1', a scan is needed at the next interval.
 volatile bool_t scan_done = TRUE;
 
-volatile int repeat_timeout = LONG_REPEAT_TIMEOUT;
-
-// The bitmask of the modifier keys to send with the USB key code.
-uint8_t modifier_keys = 0;
+// The timeout (in trips through the status update loop) before we
+// will auto-repeat the key(s) being held down.
+volatile unsigned int repeat_timeout = LONG_REPEAT_TIMEOUT;
 
 // Holds the current firmware state of the capslock, i.e. whether we
 // believe it should be up (FALSE) or down (TRUE)
-bool_t capslock_state = FALSE;
+volatile bool_t capslock_state = FALSE;
+
+// The bitmask of the modifier keys to send with the USB key code.
+uint8_t modifier_keys = 0;
 
 // Will be set to true if the capslock key is found on during a scan,
 // but will be false otherwise.
@@ -137,74 +140,13 @@ int main(void) {
   io_setup();
   usb_init();
 
-  /* Keep pushing status to the keyboard, forever. */
-
-  kbd_status_loop();
-}
-
-/* FOR DEBUGGING
- *
- * Watchdog timeout on waiting for 'scan done'
- */
-int scan_done_watchdog = SCAN_DONE_TIMEOUT;
-
-/* FOR DEBUGGING
- *
- * Print the state of the buffers to the USB hid monitor.
- */
-static void print_buffers(void) {
-  int i;
-  key k;
-
-  print("[NEW BUFFER: [");
-  for (i = 0; i < KEY_BUFFER_SIZE; i++) {
-    k = new_key_buffer[i];
-    print("{address: 0x");
-    phex(k.address);
-    print(", sent: ");
-    phex(k.sent);
-    print("}");
-    if (i < KEY_BUFFER_SIZE - 1) {
-      print(", ");
-    }
-  }
-  print("]] [OLD BUFFER: [");
-  for (i = 0; i < KEY_BUFFER_SIZE; i++) {
-    k = old_key_buffer[i];
-    print("{address: 0x");
-    phex(k.address);
-    print(", sent: ");
-    phex(k.sent);
-    print("}");
-    if (i < KEY_BUFFER_SIZE - 1) {
-      print(", ");
-    }
-  }
-  print("]]\r\n");
-}
-
-/*
- * The main service loop.
- */
-static void kbd_status_loop(void) {
-
   scan_needed_timeout = UPDATES_BETWEEN_SCANS;
 
   // While a very rough estimate, each trip through this loop is going
   // to be on the order of 1.28 ms, since each keyboard status write
   // takes 160 clock cycles at 8 us each. This does not account for
-  // overhead
+  // overhead.
   while (1) {
-
-    // We use a watchdog timer to make sure we never get stuck waiting
-    // for a 0x7f "end of scan" to appear. This has been useful during
-    // debugging, but may end up being unnecessary "for realsies"
-    if (--scan_done_watchdog == 0) {
-      if (!scan_done) {
-	scan_done = 1;
-      }
-      scan_done_watchdog = SCAN_DONE_TIMEOUT;
-    }
 
     // Decrement the repeat timeout, but only if it
     // is not yet 0.
@@ -306,6 +248,16 @@ ISR(INT3_vect) {
       key *old_key, *new_key;
       bool_t match_found;
 
+      // We immediately want to check to see if the old and new
+      // buffers are identical. If not, we reset the key repeat
+      // timeout.
+      for (i = 0; i < KEY_BUFFER_SIZE; i++) {
+	if (old_key_buffer[i].address != new_key_buffer[i].address) {
+	  repeat_timeout = LONG_REPEAT_TIMEOUT;
+	  break;
+	}
+      }
+
       // Check to see if we need to toggle the internal capslock
       // state.
       if (capslock_state && !capslock_found) {
@@ -367,12 +319,8 @@ ISR(INT3_vect) {
 	  }
 
 	  if (old_key->address == new_key->address) {
-	    if (old_key->sent) {
-	      // Keep the state and propagate it.
-	      new_key->sent = 1;
-	    } else {
+	    if (!old_key->sent || repeat_timeout == 0) {
 	      // Send it.
-
 	      key_code = usb_key_codes[new_key->address & 0x7f];
 
 	      if (key_code) {
@@ -394,6 +342,16 @@ ISR(INT3_vect) {
 	      // Mark both to ensure propagation when new is copied to old.
 	      new_key->sent = 1;
 	      old_key->sent = 1;
+
+	      // If we're re-setting the repeat timeout, reset to the shorter
+	      // delay
+	      if (repeat_timeout == 0) {
+		repeat_timeout = SHORT_REPEAT_TIMEOUT;
+	      }
+
+	    } else {
+	      // Keep the state and propagate it.
+	      new_key->sent = 1;
 	    }
 	  }
 	}
@@ -421,7 +379,10 @@ ISR(INT3_vect) {
 
     switch(data_in) {
     case 0x7b:
-      modifier_keys |= KEY_ALT;
+      // For Mac
+      modifier_keys |= KEY_GUI;
+      // For PC
+      // modifier_keys |= KEY_ALT;
       break;
     case 0x7c:
       modifier_keys |= KEY_CTRL;
@@ -532,6 +493,9 @@ static inline void reset(void) {
   _delay_us(18 * CLOCK_PERIOD);
 }
 
+/*
+ * Clear the specified keyboard buffer.
+ */
 static inline void clear_buf(key *buf, size_t size) {
   int i;
 
@@ -541,9 +505,11 @@ static inline void clear_buf(key *buf, size_t size) {
   }
 }
 
-static inline void copy_buf(key *source_buffer,
-			    key *dest_buffer,
-			    size_t size) {
+/*
+ * Copy from the specified source keyboard buffer to the destination
+ * keyboard buffer.
+ */
+static inline void copy_buf(key *source_buffer, key *dest_buffer, size_t size) {
   int i;
 
   for (i = 0; i < size; i++) {
