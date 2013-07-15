@@ -32,6 +32,9 @@
 #define LONG_REPEAT_TIMEOUT  30
 #define SHORT_REPEAT_TIMEOUT 400
 
+#define TRUE 1
+#define FALSE 0
+
 /*
  * Typedefs
  */
@@ -42,6 +45,8 @@ struct key_struct {
 };
 
 typedef struct key_struct key;
+
+typedef unsigned int bool_t;
 
 /*
  * Function definitions

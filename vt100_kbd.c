@@ -104,19 +104,30 @@ uint8_t kbd_status = 0;
 // TODO: Not 100% sure this needs to be volatile. Just being safe, as
 // it can be changed by the interrupt and _might_ be optimized away in
 // the main loop.
-volatile unsigned int scan_done = 1;
+volatile bool_t scan_done = TRUE;
 
 volatile int repeat_timeout = LONG_REPEAT_TIMEOUT;
 
-// The count of key addresses found in the current scan.
-unsigned int scan_count = 0;
+// The bitmask of the modifier keys to send with the USB key code.
+uint8_t modifier_keys = 0;
 
+// Holds the current firmware state of the capslock, i.e. whether we
+// believe it should be up (FALSE) or down (TRUE)
+bool_t capslock_state = FALSE;
+
+// Will be set to true if the capslock key is found on during a scan,
+// but will be false otherwise.
+bool_t capslock_found = FALSE;
+
+// The count of (non-modifier) key addresses found in the current
+// scan.
+size_t scan_count = 0;
+
+// Buffers to hold (non-modifier) keys seen in the current and the
+// previous scan.
 key old_key_buffer[KEY_BUFFER_SIZE];
 key new_key_buffer[KEY_BUFFER_SIZE];
 size_t new_key_buffer_idx = 0;
-
-// The number of key addresses found in this scan.
-size_t address_count = 0;
 
 /*
  * Main Entry Point
@@ -131,7 +142,10 @@ int main(void) {
   kbd_status_loop();
 }
 
-/* DEBUG: Watchdog timeout on waiting for 'scan done' */
+/* FOR DEBUGGING
+ *
+ * Watchdog timeout on waiting for 'scan done'
+ */
 int scan_done_watchdog = SCAN_DONE_TIMEOUT;
 
 /* FOR DEBUGGING
@@ -192,12 +206,18 @@ static void kbd_status_loop(void) {
       scan_done_watchdog = SCAN_DONE_TIMEOUT;
     }
 
+    // Decrement the repeat timeout, but only if it
+    // is not yet 0.
+    if (repeat_timeout > 0) {
+      repeat_timeout--;
+    }
+
     // If it's time to request a scan, do so.
     if (--scan_needed_timeout == 0 && scan_done) {
       kbd_status |= START_SCAN; // bit 6 is 'START_SCAN'
     }
 
-    kbd_write(kbd_status);
+    kbd_write(kbd_status | (capslock_state << 4));
 
     kbd_status &= ~START_SCAN;
 
@@ -284,7 +304,17 @@ ISR(INT3_vect) {
 
     if (scan_count <= 3) {
       key *old_key, *new_key;
-      int key_found;
+      bool_t match_found;
+
+      // Check to see if we need to toggle the internal capslock
+      // state.
+      if (capslock_state && !capslock_found) {
+	capslock_state = FALSE;
+	usb_keyboard_press(KEY_CAPS_LOCK, 0);
+      } else if (!capslock_state && capslock_found) {
+	capslock_state = TRUE;
+	usb_keyboard_press(KEY_CAPS_LOCK, 0);
+      }
 
       // Do a two-pass comparison of the old_key_buffer and the
       // new_key_buffer.
@@ -298,7 +328,7 @@ ISR(INT3_vect) {
 	  continue;
 	}
 
-	key_found = 0;
+	match_found = FALSE;
 
 	for (j = 0; j < KEY_BUFFER_SIZE; j++) {
 	  new_key = &new_key_buffer[j];
@@ -308,13 +338,13 @@ ISR(INT3_vect) {
 	  }
 
 	  if (new_key->address == old_key->address) {
-	    key_found = 1;
+	    match_found = TRUE;
 	  }
 	}
 
 	// If the old key does not exist in the new key buffer,
 	// we clear it out.
-	if (!key_found) {
+	if (!match_found) {
 	  old_key->address = 0;
 	  old_key->sent = 0;
 	}
@@ -346,11 +376,15 @@ ISR(INT3_vect) {
 	      key_code = usb_key_codes[new_key->address & 0x7f];
 
 	      if (key_code) {
+		int modifiers = 0;
+	       
 		print("[DEBUG] SENDING KEY: 0x");
 		phex(new_key->address);
-		print("\r\n");
+		print(" (modifiers=");
+		phex(modifier_keys);
+		print(")\r\n");
 		
-		usb_keyboard_press(key_code, 0);
+		usb_keyboard_press(key_code, modifier_keys);
 	      } else {
 		print("[DEBUG] Key out of range? address: 0x");
 		phex(new_key->address);
@@ -372,23 +406,43 @@ ISR(INT3_vect) {
     scan_done = 1;
     scan_count = 0;
     new_key_buffer_idx = 0;
+    capslock_found = 0;
+    // Reset modifier keys.
+    modifier_keys = 0;
+  } else if (data_in == 0x7e) {
+    // Capslock was pressed. DEC considers this to be a modifier key,
+    // but the USB standard says it's a toggle key. We have to watch
+    // for it and maintain the state internally so we can send it
+    // again when it turns off.
+    capslock_found = 1;
+
   } else if (data_in > 0x7a) {
     // A control key has been received.
 
-    // TODO: Implement
+    switch(data_in) {
+    case 0x7b:
+      modifier_keys |= KEY_ALT;
+      break;
+    case 0x7c:
+      modifier_keys |= KEY_CTRL;
+      break;
+    case 0x7d:
+      modifier_keys |= KEY_SHIFT;
+      break;
+    }
 
     // Make sure that we don't request a new scan until this one is over.
     scan_done = 0;
   } else {
-    // Increment the scan count.
-    scan_count++;
-
     // We append this to the cur_key_code_buffer if there's room.
     if (new_key_buffer_idx < KEY_BUFFER_SIZE) {
       idx = new_key_buffer_idx++;
       new_key_buffer[idx].address = data_in;
       new_key_buffer[idx].sent = 0;
     }
+
+    // Increment the scan count.
+    scan_count++;
 
     // Make sure that we don't request a new scan until this one is over.
     scan_done = 0;
