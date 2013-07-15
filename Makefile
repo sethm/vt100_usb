@@ -46,7 +46,7 @@ TARGET = vt100_kbd
 
 # List C source files here. (C dependencies are automatically generated.)
 SRC =	$(TARGET).c \
-	usb_debug_only.c \
+	usb_keyboard.c \
 	print.c
 
 # MCU name, you MUST set this to match the board you are using

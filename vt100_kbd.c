@@ -1,4 +1,4 @@
-/* 
+/*
  * VT100 to USB Converter.
  *
  * ------------------------------------------------------------------------
@@ -6,7 +6,7 @@
  * The MIT License (MIT)
  *
  * Copyright (c) 2013 Seth Morabito.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
  * files (the "Software"), to deal in the Software without
@@ -14,10 +14,10 @@
  * modify, merge, publish, distribute, sublicense, and/or sell copies
  * of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be
  * included in all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -26,7 +26,7 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * ------------------------------------------------------------------------
  *
  * Most of this implementation is based on DEC Document
@@ -35,14 +35,14 @@
  * interrupt routine, which this program attempts to emulate as best
  * it can.
  *
- * 
+ *
  */
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
 #include <stdint.h>
-#include "usb_debug_only.h"
+#include "usb_keyboard.h"
 #include "print.h"
 
 #include "vt100_kbd.h"
@@ -50,6 +50,49 @@
 /*
  * Globals
  */
+
+// NB: 'BREAK' corresponds to 'PAUSE'
+// PF1 = F1
+// PF2 = F2
+// PF3 = F3
+// PF4 = F4
+// LINE_FEED = RETURN = ENTER
+
+/* Lookup table that converts key addresses to USB key codes */
+static const uint8_t usb_key_codes[128] = {
+  0,              0,               0,               KEY_DELETE,
+  KEY_ENTER,      KEY_P,           KEY_O,           KEY_Y,
+  KEY_T,          KEY_W,           KEY_Q,           0,
+  0,              0,               0,               0,
+  KEY_RIGHT,      0,               0,               0,
+  KEY_LEFT_BRACE, KEY_RIGHT_BRACE, KEY_I,           KEY_U,
+  KEY_R,          KEY_E,           KEY_1,           0,
+  0,              0,               0,               0,
+  KEY_LEFT,       0,               KEY_DOWN,        KEY_PAUSE,
+  KEY_TILDE,      KEY_MINUS,       KEY_9,           KEY_7,
+  KEY_4,          KEY_3,           KEY_ESC,         0,
+  0,              0,               0,               0,
+  KEY_UP,         KEY_F3,          KEY_F1,          KEY_BACKSPACE,
+  KEY_EQUAL,      KEY_0,           KEY_8,           KEY_6,
+  KEY_5,          KEY_2,           KEY_TAB,         0,
+  0,              0,               0,               0,
+  KEYPAD_7,       KEY_F4,          KEY_F2,          KEYPAD_0,
+  KEY_ENTER,      KEY_BACKSLASH,   KEY_L,           KEY_K,
+  KEY_G,          KEY_F,           KEY_A,           0,
+  0,              0,               0,               0,
+  KEYPAD_8,       KEYPAD_ENTER,    KEYPAD_2,        KEYPAD_1,
+  0,              KEY_QUOTE,       KEY_SEMICOLON,   KEY_J,
+  KEY_H,          KEY_D,           KEY_S,           0,
+  0,              0,               0,               0,
+  KEYPAD_PERIOD,  KEY_COMMA,       KEYPAD_5,        KEYPAD_4,
+  KEY_ENTER,      KEY_PERIOD,      KEY_COMMA,       KEY_N,
+  KEY_B,          KEY_X,           KEY_SCROLL_LOCK, 0,
+  0,              0,               0,               0,
+  KEYPAD_9,       KEYPAD_3,        KEYPAD_6,        KEYPAD_MINUS,
+  0,              KEY_SLASH,       KEY_M,           KEY_SPACE,
+  KEY_V,          KEY_C,           KEY_Z,           0,
+  0,              0,               0,               0
+};
 
 /* The current iteration through the status loop. */
 int scan_needed_timeout = 0;
@@ -62,6 +105,8 @@ uint8_t kbd_status = 0;
 // it can be changed by the interrupt and _might_ be optimized away in
 // the main loop.
 volatile unsigned int scan_done = 1;
+
+volatile int repeat_timeout = LONG_REPEAT_TIMEOUT;
 
 // The count of key addresses found in the current scan.
 unsigned int scan_count = 0;
@@ -128,9 +173,9 @@ static void print_buffers(void) {
  * The main service loop.
  */
 static void kbd_status_loop(void) {
-  
+
   scan_needed_timeout = UPDATES_BETWEEN_SCANS;
-  
+
   // While a very rough estimate, each trip through this loop is going
   // to be on the order of 1.28 ms, since each keyboard status write
   // takes 160 clock cycles at 8 us each. This does not account for
@@ -151,15 +196,15 @@ static void kbd_status_loop(void) {
     if (--scan_needed_timeout == 0 && scan_done) {
       kbd_status |= START_SCAN; // bit 6 is 'START_SCAN'
     }
-    
+
     kbd_write(kbd_status);
 
     kbd_status &= ~START_SCAN;
-    
+
     if (scan_needed_timeout == 0) {
       scan_needed_timeout = UPDATES_BETWEEN_SCANS;
     }
-    
+
   }
 }
 
@@ -229,8 +274,7 @@ uint8_t kbd_read(void) {
  */
 ISR(INT3_vect) {
   uint8_t data_in = kbd_read();
-  int idx;
-  int i, j;
+  int idx, i, j, key_code;
 
   // A scan is finished when 0x7f is received.
   if (data_in >= 0x7f) {
@@ -262,7 +306,7 @@ ISR(INT3_vect) {
 	  if (new_key->address == 0) {
 	    continue;
 	  }
-	
+
 	  if (new_key->address == old_key->address) {
 	    key_found = 1;
 	  }
@@ -284,14 +328,14 @@ ISR(INT3_vect) {
 	if (new_key->address == 0) {
 	  continue;
 	}
-      
+
 	for (i = 0; i < KEY_BUFFER_SIZE; i++) {
 	  old_key = &old_key_buffer[i];
 
 	  if (old_key->address == 0) {
 	    continue;
 	  }
-	  
+
 	  if (old_key->address == new_key->address) {
 	    if (old_key->sent) {
 	      // Keep the state and propagate it.
@@ -299,9 +343,19 @@ ISR(INT3_vect) {
 	    } else {
 	      // Send it.
 
-	      print("[DEBUG] SENDING KEY: 0x");
-	      phex(new_key->address);
-	      print("\r\n");
+	      key_code = usb_key_codes[new_key->address & 0x7f];
+
+	      if (key_code) {
+		print("[DEBUG] SENDING KEY: 0x");
+		phex(new_key->address);
+		print("\r\n");
+		
+		usb_keyboard_press(key_code, 0);
+	      } else {
+		print("[DEBUG] Key out of range? address: 0x");
+		phex(new_key->address);
+		print("\r\n");
+	      }
 
 	      // Mark both to ensure propagation when new is copied to old.
 	      new_key->sent = 1;
@@ -328,7 +382,7 @@ ISR(INT3_vect) {
   } else {
     // Increment the scan count.
     scan_count++;
-    
+
     // We append this to the cur_key_code_buffer if there's room.
     if (new_key_buffer_idx < KEY_BUFFER_SIZE) {
       idx = new_key_buffer_idx++;

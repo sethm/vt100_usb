@@ -29,6 +29,9 @@
 
 #define KEY_BUFFER_SIZE 3
 
+#define LONG_REPEAT_TIMEOUT  30
+#define SHORT_REPEAT_TIMEOUT 400
+
 /*
  * Typedefs
  */
