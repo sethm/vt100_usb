@@ -1,8 +1,41 @@
 /* 
  * VT100 to USB Converter.
  *
- * Copyright (c) 2013 Seth Morabito
+ * ------------------------------------------------------------------------
  *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2013 Seth Morabito.
+ * 
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use, copy,
+ * modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * 
+ * ------------------------------------------------------------------------
+ *
+ * Most of this implementation is based on DEC Document
+ * EK-VT100-TM-003, "VT100 Series Video Terminal Technical Manual".
+ * Section 4.4.8 documents the operation of the VT100 keyboard
+ * interrupt routine, which this program attempts to emulate as best
+ * it can.
+ *
+ * 
  */
 
 #include <avr/io.h>
@@ -12,68 +45,40 @@
 #include "usb_debug_only.h"
 #include "print.h"
 
-#define CPU_PRESCALE(n)	(CLKPR = 0x80, CLKPR = (n))
-
-/* 
- * TODO: On the breadboard, D4 & D6 are tied together. In
- * the final board, they'll be separate.
- */
-/* #define KBD_RD_L    (1<<6) */
-#define KBD_RD_L    ((1<<6) | (1<<4))
-#define KBD_WR_L    (1<<7)
-#define KBD_RESET_H (1<<4)
-#define KBD_TBMT_H  (1<<6)
-
-#define CLOCK_PERIOD 8  /* microseconds */
-
-/* Pulse the KBD_RESET_H line high for 10 microseconds */
-#define TOGGLE_RESET PORTB ^= KBD_RESET_H ; _delay_us(10) ; PORTB ^= KBD_RESET_H ; _delay_us(25 * CLOCK_PERIOD)
-
-/*
- * Number of status updates between requests for keyboard scans.
- */
-#define STEPS_BETWEEN_SCAN 16
-
-/*
- * Function definitions
- */
-void setup(void);
-void kbd_status_loop(void);
-uint8_t kbd_read(void);
-void kbd_write(uint8_t val);
+#include "vt100_kbd.h"
 
 /*
  * Globals
  */
 
 /* The current iteration through the status loop. */
-volatile int scan_counter = 0;
+int scan_needed_timeout = 0;
 
 /* The keyboard status word. */
-volatile uint8_t kbd_status = 0;
+uint8_t kbd_status = 0;
 
 /* If set to '1', a scan is needed at the next interval. */
-volatile int scan_done = 1;
+// TODO: Not 100% sure this needs to be volatile. Just being safe, as
+// it can be changed by the interrupt and _might_ be optimized away in
+// the main loop.
+volatile unsigned int scan_done = 1;
 
-/* The most recently read character. */
-volatile uint8_t last_char = 0;
+// The count of key addresses found in the current scan.
+unsigned int scan_count = 0;
 
-static const char unshifted_char_codes[32] = {
-  0x00, 0x00, 0x00, 0x7f, 0x0d, 0x70, 0x6f, 0x79, 0x74, 0x77, 0x71, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x5d, 0x5b, 0x69, 0x75, 0x72, 0x65, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00
-};
+key old_key_buffer[KEY_BUFFER_SIZE];
+key new_key_buffer[KEY_BUFFER_SIZE];
+size_t new_key_buffer_idx = 0;
 
-static const char *char_names[32] = {
-  "NUL", "NUL", "NUL", "DEL", "RET", "p", "o", "y", "t", "w", "q", "NUL", "NUL", "NUL", "NUL", "NUL",
-  "NUL", "NUL", "NUL", "NUL", "]",   "[", "i", "u", "r", "e", "1", "NUL", "NUL", "NUL", "NUL", "NUL"
-};
+// The number of key addresses found in this scan.
+size_t address_count = 0;
 
 /*
  * Main Entry Point
  */
 int main(void) {
   CPU_PRESCALE(0);
-  setup();
+  io_setup();
   usb_init();
 
   /* Keep pushing status to the keyboard, forever. */
@@ -82,49 +87,83 @@ int main(void) {
 }
 
 /* DEBUG: Watchdog timeout on waiting for 'scan done' */
+int scan_done_watchdog = SCAN_DONE_TIMEOUT;
 
-volatile int scan_done_watchdog = 2048;
+/* FOR DEBUGGING
+ *
+ * Print the state of the buffers to the USB hid monitor.
+ */
+static void print_buffers(void) {
+  int i;
+  key k;
+
+  print("[NEW BUFFER: [");
+  for (i = 0; i < KEY_BUFFER_SIZE; i++) {
+    k = new_key_buffer[i];
+    print("{address: 0x");
+    phex(k.address);
+    print(", sent: ");
+    phex(k.sent);
+    print("}");
+    if (i < KEY_BUFFER_SIZE - 1) {
+      print(", ");
+    }
+  }
+  print("]] [OLD BUFFER: [");
+  for (i = 0; i < KEY_BUFFER_SIZE; i++) {
+    k = old_key_buffer[i];
+    print("{address: 0x");
+    phex(k.address);
+    print(", sent: ");
+    phex(k.sent);
+    print("}");
+    if (i < KEY_BUFFER_SIZE - 1) {
+      print(", ");
+    }
+  }
+  print("]]\r\n");
+}
 
 /*
  * The main service loop.
  */
-void kbd_status_loop(void) {
+static void kbd_status_loop(void) {
   
-  scan_counter = STEPS_BETWEEN_SCAN;
+  scan_needed_timeout = UPDATES_BETWEEN_SCANS;
   
+  // While a very rough estimate, each trip through this loop is going
+  // to be on the order of 1.28 ms, since each keyboard status write
+  // takes 160 clock cycles at 8 us each. This does not account for
+  // overhead
   while (1) {
 
-    // Watchdog check.
+    // We use a watchdog timer to make sure we never get stuck waiting
+    // for a 0x7f "end of scan" to appear. This has been useful during
+    // debugging, but may end up being unnecessary "for realsies"
     if (--scan_done_watchdog == 0) {
-
       if (!scan_done) {
-	print("Scan Watchdog Timeout exceeded. Resetting.\r\n");
 	scan_done = 1;
       }
-      
-      scan_done_watchdog = 2048;
+      scan_done_watchdog = SCAN_DONE_TIMEOUT;
     }
 
-    if (--scan_counter == 0 && scan_done) {
-      kbd_status |= 0x50; // bit 6 is 'START_SCAN'
-    } else {
-      kbd_status &= ~0x50;
+    // If it's time to request a scan, do so.
+    if (--scan_needed_timeout == 0 && scan_done) {
+      kbd_status |= START_SCAN; // bit 6 is 'START_SCAN'
     }
     
     kbd_write(kbd_status);
+
+    kbd_status &= ~START_SCAN;
     
-    if (scan_counter == 0) {
-      scan_counter = STEPS_BETWEEN_SCAN;
+    if (scan_needed_timeout == 0) {
+      scan_needed_timeout = UPDATES_BETWEEN_SCANS;
     }
     
   }
 }
 
 /*
- * The unfortuate arrangement of IO pins and my absurd desire to make
- * the hardware wiring easier lead to a fairly complex implementation
- * of a simple write.
- *
  * The keyboard output is wired to B0, B1, B2, B3, B7, D0, D1, D2.
  *
  * Meanwhile, D6 and D7 are also outputs (wired to the KBD_RD_L and
@@ -132,20 +171,25 @@ void kbd_status_loop(void) {
  * data writes!
  */
 
-void kbd_write(uint8_t val) {
+static void kbd_write(uint8_t val) {
+  // Data is written to:
+  //
+  //    [D2|D1|D0|B7|B3|B2|B1|B0]
+  //     7  6  5  4  3  2  1  0
+  //
   PORTB = ((val & 0x10) << 3) | (val & 0x0F);
+  // KBD_RD_L and KBD_WR_L should always be left high during a write.
   PORTD = ((val & 0xE0) >> 5) | (1 << 7) | KBD_RD_L | KBD_WR_L;
 
-  // 1. Wait for write buffer to be empty.
+  // Poll the KBD_TBMT_H input, waiting for write buffer to be empty.
   while (!(PINC & KBD_TBMT_H)) {
     ; // Do nothing
   }
 
-  // 2. OK, buffer is empty. Let's write by pulsing
-  //    KBD_WR_L low for 10 uS.
-  PORTD ^= KBD_WR_L;
+  // Once the buffer is empty, write by pulsing KBD_WR_L for 10 uS
+  PORTD &= ~KBD_WR_L;
   _delay_us(10);
-  PORTD ^= KBD_WR_L;
+  PORTD |= KBD_WR_L;
 }
 
 /*
@@ -165,11 +209,11 @@ uint8_t kbd_read(void) {
   // PORTD ^= KBD_RD_L;
   PORTD |= KBD_RD_L;  // Make high again
 
-  /* Expected result byte is read from:
-   *
-   *    [B5|B6|F7|F6|F5|F4|F1|F0]
-   *     7  6  5  4  3  2  1  0
-   */
+  // Data is read from:
+  //
+  //    [B5|B6|F7|F6|F5|F4|F1|F0]
+  //     7  6  5  4  3  2  1  0
+  //
   return (uint8_t)((f & 0x03) |                 // F0..F1
 		   ((f & 0xf0) >> 2) |          // F4..F5
 		   (b & 0x40) |                 // B6
@@ -179,40 +223,120 @@ uint8_t kbd_read(void) {
 /*
  * Interrupt service routine for keyboard input.
  *
- * When the UART receives a byte of data, Port D3
- * will transition from LOW to HIGH (this is INT3 on
- * the Teensy 2.0)
- *
- * When that happens, we read off the byte, and the
- * interrupt is considered to have been served.
- *
+ * When the UART receives a byte of data from the keyboard, Port D3
+ * will transition from LOW to HIGH, triggering the INT3 interrupt.
+ * We read off a byte and act on it.
  */
-
-// TODO:
-// I think the algorithm is:
-//   1. Read into global keycode variable.
-//   2. If keycode was not '7F', disable 'start next scan' variable.
-//   3. If keycode is '7F', enable 'start next scan' variable.
-//
-// New global state needed:
-//   1. Last scan code read.
-//   2. Toggle for 'do a scan at your next opportunity'
-
 ISR(INT3_vect) {
   uint8_t data_in = kbd_read();
-  
-  if (data_in == 0x7f) {
-    scan_done = 1;
-  } else {
-    /* If the data is not 0x7f, we need to hold off on the scan requests until it appears. */
-    // TODO: We'll need to watch for key repeat here.
-    if (last_char != data_in) {
-      print("KBD Read interrupt: data=");
-      phex(data_in);
-      print("\r\n");
+  int idx;
+  int i, j;
 
-      last_char = data_in;
+  // A scan is finished when 0x7f is received.
+  if (data_in >= 0x7f) {
+
+    // If the scan_count was > 3, we pretend this scan never happened,
+    // as per the technical manual.
+
+    if (scan_count <= 3) {
+      key *old_key, *new_key;
+      int key_found;
+
+      // Do a two-pass comparison of the old_key_buffer and the
+      // new_key_buffer.
+      //
+      // 1. Remove any keys from the old_key_buffer that do not appear
+      //    in the new_key_buffer
+      for (i = 0; i < KEY_BUFFER_SIZE; i++) {
+	old_key = &old_key_buffer[i];
+
+	if (old_key->address == 0) {
+	  continue;
+	}
+
+	key_found = 0;
+
+	for (j = 0; j < KEY_BUFFER_SIZE; j++) {
+	  new_key = &new_key_buffer[j];
+
+	  if (new_key->address == 0) {
+	    continue;
+	  }
+	
+	  if (new_key->address == old_key->address) {
+	    key_found = 1;
+	  }
+	}
+
+	// If the old key does not exist in the new key buffer,
+	// we clear it out.
+	if (!key_found) {
+	  old_key->address = 0;
+	  old_key->sent = 0;
+	}
+      }
+
+      // 2. Any remaining keys in the old_key_buffer are compared
+      //    to the new_key_buffer to see if they should be transmitted.
+      for (j = 0; j < KEY_BUFFER_SIZE; j++) {
+	new_key = &new_key_buffer[j];
+
+	if (new_key->address == 0) {
+	  continue;
+	}
+      
+	for (i = 0; i < KEY_BUFFER_SIZE; i++) {
+	  old_key = &old_key_buffer[i];
+
+	  if (old_key->address == 0) {
+	    continue;
+	  }
+	  
+	  if (old_key->address == new_key->address) {
+	    if (old_key->sent) {
+	      // Keep the state and propagate it.
+	      new_key->sent = 1;
+	    } else {
+	      // Send it.
+
+	      print("[DEBUG] SENDING KEY: 0x");
+	      phex(new_key->address);
+	      print("\r\n");
+
+	      // Mark both to ensure propagation when new is copied to old.
+	      new_key->sent = 1;
+	      old_key->sent = 1;
+	    }
+	  }
+	}
+      }
     }
+
+    // Reset state.
+    copy_buf(new_key_buffer, old_key_buffer, KEY_BUFFER_SIZE);
+    clear_buf(new_key_buffer, KEY_BUFFER_SIZE);
+    scan_done = 1;
+    scan_count = 0;
+    new_key_buffer_idx = 0;
+  } else if (data_in > 0x7a) {
+    // A control key has been received.
+
+    // TODO: Implement
+
+    // Make sure that we don't request a new scan until this one is over.
+    scan_done = 0;
+  } else {
+    // Increment the scan count.
+    scan_count++;
+    
+    // We append this to the cur_key_code_buffer if there's room.
+    if (new_key_buffer_idx < KEY_BUFFER_SIZE) {
+      idx = new_key_buffer_idx++;
+      new_key_buffer[idx].address = data_in;
+      new_key_buffer[idx].sent = 0;
+    }
+
+    // Make sure that we don't request a new scan until this one is over.
     scan_done = 0;
   }
 }
@@ -220,7 +344,7 @@ ISR(INT3_vect) {
 /*
  * Configure inputs and outputs.
  */
-void setup(void) {
+static inline void io_setup(void) {
   /*
    * B0 - OUT - TBR0
    * B1 - OUT - TBR1
@@ -276,12 +400,46 @@ void setup(void) {
   // Enable interrupts on INT3 (PD3)
   EIMSK = (1 << INT3);
 
-  // Configure for RISING EDGE trigger.
+  // Configure for RISING EDGE trigger, since
+  // the UART data available line is active high.
   EICRA = (1 << ISC31) | (1 << ISC30);
 
   // Now turn on interrupts.
   sei();
 
   // Do a reset.
-  TOGGLE_RESET;
+  reset();
+}
+
+/*
+ * Request a reset of the UART
+ */
+static inline void reset(void) {
+  // Bring the KBD_RESET_H line high for 10 uS, then wait at least 18
+  // UART clock cycles before continuing (as specified by the
+  // datasheet)
+  PORTB |= KBD_RESET_H;
+  _delay_us(10);
+  PORTB &= ~KBD_RESET_H;
+  _delay_us(18 * CLOCK_PERIOD);
+}
+
+static inline void clear_buf(key *buf, size_t size) {
+  int i;
+
+  for (i = 0; i < size; i++) {
+    buf[i].address = 0;
+    buf[i].sent = 0;
+  }
+}
+
+static inline void copy_buf(key *source_buffer,
+			    key *dest_buffer,
+			    size_t size) {
+  int i;
+
+  for (i = 0; i < size; i++) {
+    dest_buffer[i].address = source_buffer[i].address;
+    dest_buffer[i].sent = source_buffer[i].sent;
+  }
 }
