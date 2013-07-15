@@ -31,10 +31,8 @@
  *
  * Most of this implementation is based on DEC Document
  * EK-VT100-TM-003, "VT100 Series Video Terminal Technical Manual".
- * Section 4.4.8 documents the operation of the VT100 keyboard
- * interrupt routine, which this program attempts to emulate as best
- * it can.
- *
+ * Sections 4.4.8 and 4.4.9 document the VT100 firmware's
+ * key handling procedures, which this program attempts to emulate.
  *
  */
 
@@ -56,6 +54,7 @@
 // PF2 = F2
 // PF3 = F3
 // PF4 = F4
+// SETUP = KEY_GUI ('Command' on OS X).
 // LINE_FEED = RETURN = ENTER
 
 /* Lookup table that converts key addresses to USB key codes */
