@@ -40,98 +40,22 @@
 #----------------------------------------------------------------------------
 
 
-# Target file name (without extension).
 TARGET = vt100_kbd
-
-
-# List C source files here. (C dependencies are automatically generated.)
 SRC =	$(TARGET).c \
-	usb_keyboard.c \
-	print.c
-
-# MCU name, you MUST set this to match the board you are using
-# type "make clean" after changing this, so all files will be rebuilt
-#
-#MCU = at90usb162       # Teensy 1.0
-MCU = atmega32u4        # Teensy 2.0
-#MCU = at90usb646       # Teensy++ 1.0
-#MCU = at90usb1286      # Teensy++ 2.0
-
-
-# Processor frequency.
-#   Normally the first thing your program should do is set the clock prescaler,
-#   so your program will run at the correct speed.  You should also set this
-#   variable to same clock speed.  The _delay_ms() macro uses this, and many
-#   examples use this variable to calculate timings.  Do not add a "UL" here.
+	usb_keyboard.c
+MCU = atmega32u4
 F_CPU = 16000000
-
-
-# Output format. (can be srec, ihex, binary)
 FORMAT = ihex
-
-
-# Object files directory
-#     To put object files in current directory, use a dot (.), do NOT make
-#     this an empty or blank macro!
 OBJDIR = .
-
-
-# List C++ source files here. (C dependencies are automatically generated.)
 CPPSRC = 
-
-
-# List Assembler source files here.
-#     Make them always end in a capital .S.  Files ending in a lowercase .s
-#     will not be considered source files but generated files (assembler
-#     output from the compiler), and will be deleted upon "make clean"!
-#     Even though the DOS/Win* filesystem matches both .s and .S the same,
-#     it will preserve the spelling of the filenames, and gcc itself does
-#     care about how the name is spelled on its command-line.
 ASRC =
-
-
-# Optimization level, can be [0, 1, 2, 3, s]. 
-#     0 = turn off optimization. s = optimize for size.
-#     (Note: 3 is not always the best optimization level. See avr-libc FAQ.)
 OPT = s
-
-
-# Debugging format.
-#     Native formats for AVR-GCC's -g are dwarf-2 [default] or stabs.
-#     AVR Studio 4.10 requires dwarf-2.
-#     AVR [Extended] COFF format requires stabs, plus an avr-objcopy run.
 DEBUG = dwarf-2
-
-
-# List any extra directories to look for include files here.
-#     Each directory must be seperated by a space.
-#     Use forward slashes for directory separators.
-#     For a directory that has spaces, enclose it in quotes.
 EXTRAINCDIRS = 
-
-
-# Compiler flag to set the C Standard level.
-#     c89   = "ANSI" C
-#     gnu89 = c89 plus GCC extensions
-#     c99   = ISO C99 standard (not yet fully implemented)
-#     gnu99 = c99 plus GCC extensions
 CSTANDARD = -std=gnu99
-
-
-# Place -D or -U options here for C sources
 CDEFS = -DF_CPU=$(F_CPU)UL
-
-
-# Place -D or -U options here for ASM sources
 ADEFS = -DF_CPU=$(F_CPU)
-
-
-# Place -D or -U options here for C++ sources
 CPPDEFS = -DF_CPU=$(F_CPU)UL
-#CPPDEFS += -D__STDC_LIMIT_MACROS
-#CPPDEFS += -D__STDC_CONSTANT_MACROS
-
-
 
 #---------------- Compiler Options C ----------------
 #  -g*:          generate debugging information

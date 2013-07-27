@@ -39,23 +39,36 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include "usb_keyboard.h"
-#include "print.h"
-
 #include "vt100_kbd.h"
+
+#define KEYCLICK_ENABLED 1
+
+#define BELL_ENABLED     1
 
 /*
  * Globals
  */
 
-// NB: 'BREAK' corresponds to 'PAUSE'
-// PF1 = F1
-// PF2 = F2
-// PF3 = F3
-// PF4 = F4
-// SETUP = KEY_GUI ('Command' on OS X).
-// LINE_FEED = RETURN = ENTER
+// I have made some pretty arbitrary choices when deciding how to map
+// various DEC keys to USB. Letters, numbers, and punctuation all
+// behave just as you'd expect, but some other keys may need to be
+// called out for special attention:
+//
+// DEC         USB
+// ---         ---
+// BREAK       Pause / Break
+// PF1         F1
+// PF2         F2
+// PF3         F3
+// PF4         F4
+// SET UP      Alt
+// SETUP       Windows Key (PC) / Command (Mac)
+// LINE FEED   Enter / Return
+// NO SCROLL   Scroll Lock
+
 
 /* Lookup table that converts key addresses to USB key codes */
 static const uint8_t usb_key_codes[128] = {
@@ -93,10 +106,11 @@ static const uint8_t usb_key_codes[128] = {
   0,              0,               0,               0
 };
 
-/* The current iteration through the status loop. */
-int scan_needed_timeout = 0;
+// Decremented each time through the main loop. When this value
+// reaches '0', a scan is requested.
+int scan_needed_timeout = UPDATES_BETWEEN_SCANS;
 
-/* The keyboard status word. */
+// The keyboard status word.
 uint8_t kbd_status = 0;
 
 // TODO: Not 100% sure these three need to be volatile. Just being
@@ -125,6 +139,12 @@ bool_t capslock_found = FALSE;
 // scan.
 size_t scan_count = 0;
 
+// If set to a value > 0, will cause the speaker to click when the status
+// byte is sent to the keyboard. Each time through the status update,
+// this will be decremented until it reaches 0 again. A value of ~'200'
+// will generate a beep. A value of '2' will generate a key-click.
+volatile uint8_t speaker_counter = 0;
+
 // Buffers to hold (non-modifier) keys seen in the current and the
 // previous scan.
 key old_key_buffer[KEY_BUFFER_SIZE];
@@ -138,8 +158,6 @@ int main(void) {
   CPU_PRESCALE(0);
   io_setup();
   usb_init();
-
-  scan_needed_timeout = UPDATES_BETWEEN_SCANS;
 
   // While a very rough estimate, each trip through this loop is going
   // to be on the order of 1.28 ms, since each keyboard status write
@@ -155,10 +173,10 @@ int main(void) {
 
     // If it's time to request a scan, do so.
     if (--scan_needed_timeout == 0 && scan_done) {
-      kbd_status |= START_SCAN; // bit 6 is 'START_SCAN'
+      kbd_status |= START_SCAN;
     }
 
-    kbd_write(kbd_status | (capslock_state << 4));
+    kbd_write(kbd_status | (capslock_state << 4) | (speaker_counter ? (1 << 7) : 0));
 
     kbd_status &= ~START_SCAN;
 
@@ -166,6 +184,7 @@ int main(void) {
       scan_needed_timeout = UPDATES_BETWEEN_SCANS;
     }
 
+    if (speaker_counter > 0) speaker_counter--;
   }
 }
 
@@ -235,7 +254,8 @@ uint8_t kbd_read(void) {
  */
 ISR(INT3_vect) {
   uint8_t data_in = kbd_read();
-  int idx, i, j, key_code;
+  uint8_t key_code;
+  int idx, i, j;
 
   // A scan is finished when 0x7f is received.
   if (data_in >= 0x7f) {
@@ -319,23 +339,20 @@ ISR(INT3_vect) {
 
 	  if (old_key->address == new_key->address) {
 	    if (!old_key->sent || repeat_timeout == 0) {
-	      // Send it.
+
 	      key_code = usb_key_codes[new_key->address & 0x7f];
 
 	      if (key_code) {
-		int modifiers = 0;
-	       
-		print("[DEBUG] SENDING KEY: 0x");
-		phex(new_key->address);
-		print(" (modifiers=");
-		phex(modifier_keys);
-		print(")\r\n");
+		if (KEYCLICK_ENABLED && repeat_timeout > SHORT_REPEAT_TIMEOUT) {
+		  speaker_counter = 2; // Short key-click
+		}
 		
+		if (BELL_ENABLED && (modifier_keys & KEY_CTRL) && key_code == KEY_G) {
+		  speaker_counter = 200; // ~ 1 second bell
+		}
+
+		// Send it.
 		usb_keyboard_press(key_code, modifier_keys);
-	      } else {
-		print("[DEBUG] Key out of range? address: 0x");
-		phex(new_key->address);
-		print("\r\n");
 	      }
 
 	      // Mark both to ensure propagation when new is copied to old.
@@ -360,10 +377,10 @@ ISR(INT3_vect) {
     // Reset state.
     copy_buf(new_key_buffer, old_key_buffer, KEY_BUFFER_SIZE);
     clear_buf(new_key_buffer, KEY_BUFFER_SIZE);
-    scan_done = 1;
+    scan_done = TRUE;
     scan_count = 0;
     new_key_buffer_idx = 0;
-    capslock_found = 0;
+    capslock_found = FALSE;
     // Reset modifier keys.
     modifier_keys = 0;
   } else if (data_in == 0x7e) {
@@ -371,16 +388,15 @@ ISR(INT3_vect) {
     // but the USB standard says it's a toggle key. We have to watch
     // for it and maintain the state internally so we can send it
     // again when it turns off.
-    capslock_found = 1;
+    capslock_found = TRUE;
 
   } else if (data_in > 0x7a) {
     // A control key has been received.
 
     switch(data_in) {
     case 0x7b:
-      // For Mac
       modifier_keys |= KEY_GUI;
-      // For PC
+      // For PC, change to:
       // modifier_keys |= KEY_ALT;
       break;
     case 0x7c:
@@ -392,7 +408,7 @@ ISR(INT3_vect) {
     }
 
     // Make sure that we don't request a new scan until this one is over.
-    scan_done = 0;
+    scan_done = FALSE;
   } else {
     // We append this to the cur_key_code_buffer if there's room.
     if (new_key_buffer_idx < KEY_BUFFER_SIZE) {
@@ -405,7 +421,7 @@ ISR(INT3_vect) {
     scan_count++;
 
     // Make sure that we don't request a new scan until this one is over.
-    scan_done = 0;
+    scan_done = FALSE;
   }
 }
 

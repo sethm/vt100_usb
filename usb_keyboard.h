@@ -12,9 +12,12 @@ extern uint8_t keyboard_modifier_keys;
 extern uint8_t keyboard_keys[6];
 extern volatile uint8_t keyboard_leds;
 
-int8_t usb_debug_putchar(uint8_t c);	// transmit a character
-void usb_debug_flush_output(void);	// immediately transmit any buffered output
-#define USB_DEBUG_HID
+// This file does not include the HID debug functions, so these empty
+// macros replace them with nothing, so users can compile code that
+// has calls to these functions.
+#define usb_debug_putchar(c)
+#define usb_debug_flush_output()
+
 
 #define KEY_CTRL	0x01
 #define KEY_SHIFT	0x02
