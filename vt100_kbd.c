@@ -45,8 +45,8 @@
 #include "usb_keyboard.h"
 #include "vt100_kbd.h"
 
-#define MODIFIER_ALT      0x31
-#define MODIFIER_GUI      0x41
+#define MODIFIER_ALT      0x31 // PF3
+#define MODIFIER_GUI      0x41 // PF4
 #define MODIFIER_SETUP    0x7b
 #define MODIFIER_CTRL     0x7c
 #define MODIFIER_SHIFT    0x7d
@@ -117,7 +117,7 @@ static const uint8_t usb_key_codes[128] = {
   0,              KEY_SLASH,       KEY_M,           KEY_SPACE,
   KEY_V,          KEY_C,           KEY_Z,           0,
   0,              0,               0,               0
-};
+  };
 
 // Decremented each time through the main loop. When this value
 // reaches '0', a scan is requested.
@@ -250,9 +250,9 @@ uint8_t kbd_read(void) {
   //     7  6  5  4  3  2  1  0
   //
   return (uint8_t)((f & 0x03) |                 // F0..F1
-		   ((f & 0xf0) >> 2) |          // F4..F5
-		   (b & 0x40) |                 // B6
-		   ((b & 0x20) << 2));          // B5
+                   ((f & 0xf0) >> 2) |          // F4..F5
+                   (b & 0x40) |                 // B6
+                   ((b & 0x20) << 2));          // B5
 }
 
 /***********************************************************************/
@@ -310,11 +310,11 @@ static inline void possibly_transmit_keys(void) {
       new_key = &new_key_buffer[j];
 
       if (new_key->address == 0) {
-	continue;
+        continue;
       }
 
       if (new_key->address == old_key->address) {
-	match_seen = TRUE;
+        match_seen = TRUE;
       }
     }
 
@@ -339,45 +339,45 @@ static inline void possibly_transmit_keys(void) {
       old_key = &old_key_buffer[i];
 
       if (old_key->address == 0) {
-	continue;
+        continue;
       }
 
       if (old_key->address == new_key->address) {
-	if (!old_key->sent || repeat_timeout == 0) {
-	  uint8_t key_code = usb_key_codes[new_key->address & 0x7f];
+        if (!old_key->sent || repeat_timeout == 0) {
+          uint8_t key_code = usb_key_codes[new_key->address & 0x7f];
 
-	  if (key_code) {
-	    if ((kbd_status & KEYCLICK_BIT) && 
-		repeat_timeout > SHORT_REPEAT_TIMEOUT) {
-	      speaker_counter = 2; // Short key-click
-	    }
-	    
-	    if ((kbd_status & BELL_BIT) && 
-		(modifier_keys & KEY_CTRL) && key_code == KEY_G) {
-	      speaker_counter = 200; // ~ 1 second bell
-	    }
+          if (key_code) {
+            if ((kbd_status & KEYCLICK_BIT) &&
+                repeat_timeout > SHORT_REPEAT_TIMEOUT) {
+              speaker_counter = 2; // Short key-click
+            }
 
-	    if (kbd_status & SETUP_BIT) {
-	      handle_setup(key_code, modifier_keys);
-	    } else {
-	      usb_keyboard_press(key_code, modifier_keys);
-	    }
-	  }
+            if ((kbd_status & BELL_BIT) &&
+                (modifier_keys & KEY_CTRL) && key_code == KEY_G) {
+              speaker_counter = 200; // ~ 1 second bell
+            }
 
-	  // Mark both to ensure propagation when new is copied to old.
-	  new_key->sent = 1;
-	  old_key->sent = 1;
+            if (kbd_status & SETUP_BIT) {
+              handle_setup(key_code, modifier_keys);
+            } else {
+              usb_keyboard_press(key_code, modifier_keys);
+            }
+          }
 
-	  // If we're re-setting the repeat timeout, reset to the shorter
-	  // delay
-	  if (repeat_timeout == 0) {
-	    repeat_timeout = SHORT_REPEAT_TIMEOUT;
-	  }
+          // Mark both to ensure propagation when new is copied to old.
+          new_key->sent = 1;
+          old_key->sent = 1;
 
-	} else {
-	  // Keep the state and propagate it.
-	  new_key->sent = 1;
-	}
+          // If we're re-setting the repeat timeout, reset to the shorter
+          // delay
+          if (repeat_timeout == 0) {
+            repeat_timeout = SHORT_REPEAT_TIMEOUT;
+          }
+
+        } else {
+          // Keep the state and propagate it.
+          new_key->sent = 1;
+        }
       }
     }
   }
@@ -406,12 +406,12 @@ ISR(INT3_vect) {
       // buffers are identical. If not, we reset the key repeat
       // timeout.
       for (int i = 0; i < KEY_BUFFER_SIZE; i++) {
-	if (old_key_buffer[i].address != new_key_buffer[i].address) {
-	  repeat_timeout = LONG_REPEAT_TIMEOUT;
-	  break;
-	}
+        if (old_key_buffer[i].address != new_key_buffer[i].address) {
+          repeat_timeout = LONG_REPEAT_TIMEOUT;
+          break;
+        }
       }
-      
+
       update_modifier_state();
       possibly_transmit_keys();
     }
@@ -461,7 +461,7 @@ ISR(INT3_vect) {
       new_key_buffer[idx].address = data_in;
       new_key_buffer[idx].sent = 0;
     }
-    
+
     // Increment the count of non-modifier keys found
     scan_count++;
   }
