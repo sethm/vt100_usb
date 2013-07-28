@@ -34,16 +34,28 @@
 #define __VT100_KBD_H
 
 #define CPU_PRESCALE(n)	(CLKPR = 0x80, CLKPR = (n))
- 
-// TODO: On the breadboard, D4 & D6 are tied together. In
-// the final board, they'll be separate.
 
-/* #define KBD_RD_L    (1<<6) */
-#define KBD_RD_L    ((1<<6) | (1<<4))
+#define KBD_RD_L    (1<<6)
 #define KBD_WR_L    (1<<7)
 #define KBD_RESET_H (1<<4)
 #define KBD_TBMT_H  (1<<6)
 #define START_SCAN  (1<<6)
+
+#define MODIFIER_ALT      0x31 // PF3
+#define MODIFIER_GUI      0x41 // PF4
+#define MODIFIER_SETUP    0x7b
+#define MODIFIER_CTRL     0x7c
+#define MODIFIER_SHIFT    0x7d
+#define MODIFIER_CAPSLOCK 0x7e
+#define END_OF_SCAN       0x7f
+
+// Keyboard Status bits.
+#define BELL_BIT          0x01
+#define KEYCLICK_BIT      0x02
+#define SETUP_BIT         0x04
+#define SPEAKER_LED_BIT   0x08
+#define CAPSLOCK_BIT      0x10
+#define SPEAKER_BIT       0x80
 
 #define CLOCK_PERIOD 8  /* microseconds */
 
