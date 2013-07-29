@@ -41,11 +41,11 @@ The VT100 keyboard is notably deficient in modifier keys compared to a modern US
 
 The VT100 keyboard's built-in speaker can be used to generate key-clicks and an audible bell if the options are set in the USB converter's firmware.
 
-### 4.1 Bell ###
+### 4.1 Bell (SET-UP + B)###
 
 To toggle an audible bell when the **^G** (control-G, ASCII BEL) character is sent, hold down **SET-UP** and press **B**. The first LED (labelled **L1** on the keyboard) will illuminate when the audible bell is enabled.
 
-### 4.2 Key Clicks ###
+### 4.2 Key Clicks (SET-UP + K)###
 
 To toggle key clicks, hold down **SET-UP** and press **K**. The second LED (labelled **INSERT** on the keyboard) will illuminate to show that key clicks are enabled.
 
