@@ -96,15 +96,15 @@ typedef unsigned int bool_t;
  * Function definitions
  */
 static uint8_t kbd_read(void);
-
 static void kbd_write(uint8_t val);
-
 static inline void io_setup(void);
-
-static inline void reset(void);
-
-static inline void clear_buf(key *buf, size_t size);
-
-static inline void copy_buf(key *source_buffer, key *dest_buffer, size_t size);
-
+static inline void uart_reset(void);
+static inline void update_modifier_state(void);
+static inline void possibly_transmit_keys(void);
+static inline void handle_setup(uint8_t, uint8_t);
+static inline void clear_buf(key *, size_t);
+static inline void copy_buf(key *, key *, size_t);
+static inline void eeprom_init(void);
+static inline void toggle_bell_state(void);
+static inline void toggle_keyclick_state(void);
 #endif

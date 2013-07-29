@@ -139,6 +139,9 @@ key old_key_buffer[KEY_BUFFER_SIZE];
 key new_key_buffer[KEY_BUFFER_SIZE];
 size_t new_key_buffer_idx = 0;
 
+// EEPROM storage
+uint8_t EEMEM eeprom_state = 0xff;
+
 /*
  * Main Entry Point
  */
@@ -262,17 +265,23 @@ static inline void update_modifier_state(void) {
   }
 }
 
+/*
+ * Handle internal set-up of keyclick and bell enable.
+ */
 static inline void handle_setup(uint8_t key_code, uint8_t modifier_keys) {
   switch (key_code) {
   case KEY_K:
-    kbd_status ^= KEYCLICK_BIT;
+    toggle_keyclick_state();
     break;
   case KEY_B:
-    kbd_status ^= BELL_BIT;
+    toggle_bell_state();
     break;
   }
 }
 
+/*
+ * If we have valid data to send to USB, send it.
+ */
 static inline void possibly_transmit_keys(void) {
   key *old_key, *new_key;
 
@@ -455,6 +464,8 @@ ISR(INT3_vect) {
  * Configure inputs and outputs.
  */
 static inline void io_setup(void) {
+  cli();
+
   /*
    * B0 - OUT - TBR0
    * B1 - OUT - TBR1
@@ -514,17 +525,19 @@ static inline void io_setup(void) {
   // the UART data available line is active high.
   EICRA = (1 << ISC31) | (1 << ISC30);
 
-  // Now turn on interrupts.
-  sei();
+  // Reset the UART
+  uart_reset();
 
-  // Do a reset.
-  reset();
+  // Finally, initialize the eeprom.
+  eeprom_init();
+
+  sei();
 }
 
 /*
  * Request a reset of the UART
  */
-static inline void reset(void) {
+static inline void uart_reset(void) {
   // Bring the KBD_RESET_H line high for 10 uS, then wait at least 18
   // UART clock cycles before continuing (as specified by the
   // datasheet)
@@ -556,5 +569,50 @@ static inline void copy_buf(key *source_buffer, key *dest_buffer, size_t size) {
   for (i = 0; i < size; i++) {
     dest_buffer[i].address = source_buffer[i].address;
     dest_buffer[i].sent = source_buffer[i].sent;
+  }
+}
+
+/*
+ * On startup, attempt to verify whether the EEPROM has been
+ * correctly initialized, and if not, initialize it.
+ */
+
+static inline void eeprom_init(void) {
+
+  uint8_t val = eeprom_read_byte(&eeprom_state);
+
+  if (val == 0xff) {
+    // If the eeprom is still set at its initial value, 0xff,
+    // then we need to initialize it.
+    eeprom_update_byte(&eeprom_state, 0x00);
+  } else {
+    // Otherwise, we can load our own state from it.
+    kbd_status |= (val & (BELL_BIT | KEYCLICK_BIT));
+  }
+}
+
+static inline void toggle_bell_state(void) {
+
+  uint8_t val = eeprom_read_byte(&eeprom_state);
+
+  if (kbd_status & BELL_BIT) {
+    kbd_status &= ~BELL_BIT;
+    eeprom_update_byte(&eeprom_state, val & ~BELL_BIT);
+  } else {
+    kbd_status |= BELL_BIT;
+    eeprom_update_byte(&eeprom_state, val | BELL_BIT);
+  }
+}
+
+static inline void toggle_keyclick_state(void) {
+
+  uint8_t val = eeprom_read_byte(&eeprom_state);
+
+  if (kbd_status & KEYCLICK_BIT) {
+    kbd_status &= ~KEYCLICK_BIT;
+    eeprom_update_byte(&eeprom_state, val & ~KEYCLICK_BIT);
+  } else {
+    kbd_status |= KEYCLICK_BIT;
+    eeprom_update_byte(&eeprom_state, val | KEYCLICK_BIT);
   }
 }
