@@ -39,7 +39,7 @@ The VT100 keyboard is notably deficient in modifier keys compared to a modern US
 
 ## 4.0 Keyboard Configuration
 
-The VT100 keyboard's built-in speaker can be used to generate key-clicks and an audible bell if the options are set in the USB converter's firmware.
+The VT100 keyboard's built-in speaker can be used to generate key-clicks and an audible bell if the options are set in the USB converter's firmware. The options are persisted in the AVR's non-volatile EEPROM between restarts.
 
 ### 4.1 Bell (SET-UP + B)###
 
